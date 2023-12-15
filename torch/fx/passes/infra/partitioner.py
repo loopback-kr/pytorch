@@ -1,6 +1,11 @@
 from typing import Dict, List, Set, Iterable, Sequence, Optional, Deque
 
 from torch.fx.passes.utils.fuser_utils import fuse_by_partitions
+import logging
+from collections import defaultdict, deque
+from copy import copy
+from functools import lru_cache
+from typing import Deque, Dict, Iterable, List, Optional, Sequence, Set
 
 from torch.fx.graph_module import GraphModule
 from torch.fx.node import Node, _get_qualified_name
@@ -55,7 +60,44 @@ class CapabilityBasedPartitioner:
             self.operator_support.is_node_supported(dict(self.graph_module.named_modules()), node)
         )
 
+    # This function iterates over all the nodes in the graph and starts a new DFS traversal
+    # for each node. During these traversals it maintains two dictionaries one which keeps
+    # track of all the nodes that are encountered in a DFS traversal starting at a particular
+    # node and another dictionary which keeps track of all the nodes that can reach a particular node.
+    def cache_dfs_path(self):
+        dfs_paths_from_node = defaultdict(set)
+        dfs_paths_to_node = defaultdict(set)
+        stack = deque()
+
+        for node in self.graph_module.graph.nodes:
+            stack.append(node)
+            visited = set()
+            curr_path = dfs_paths_from_node[node]
+
+            while stack:
+                node_stack = stack.pop()
+
+                if node_stack in visited:
+                    continue
+
+                users = node_stack.users
+
+                for user_node in users:
+                    curr_path.add(user_node)
+                    dfs_paths_to_node[user_node].add(node)
+                    stack.append(user_node)
+
+                visited.add(node_stack)
+
+        return dfs_paths_from_node, dfs_paths_to_node
+
     def propose_partitions(self) -> List[Partition]:
+        # partition_map is a mapping from partition id to a set of partition id's.
+        # The value set contains all the partition ids that can be reached by doing a
+        # DFS starting from the partition id in the key.
+        partition_map : Dict[int, Set]= defaultdict(set)
+        dfs_paths_from_node, dfs_paths_to_node = self.cache_dfs_path()
+
         # assumptions: nodes in candidate list is sorted in topological order
         assignment: Dict[Node, int] = {}   # mapping from node to partition_id
         partitions_by_id: Dict[int, Partition] = {}  # mapping from partition_id to partition
@@ -69,38 +111,33 @@ class CapabilityBasedPartitioner:
             merged_nodes = copy(partitions_by_id[self_id].nodes)
             merged_nodes.update(partitions_by_id[other_id].nodes)
 
-            # Note it's ok to use `set` here, since we are only query if a node
-            # has been visited. We are NEVER going to iterate on nodes inside
-            # the set.
-            visited: Set[Node] = set()
-
             def dfs_iter_find_cycle(root_node):
                 stack : Deque[Node] = deque()
                 stack.append(root_node)
+                visited_partition_ids = set()
 
-                while stack:
-                    node = stack.pop()
+                for path_node in dfs_paths_from_node[root_node]:
+                    # If any of the nodes in the dfs path of this node are in the merged_nodes
+                    # list then there is a cycle in the graph.
+                    if path_node in merged_nodes:
+                        return True
 
-                    if node in visited:
-                        continue
-                    if node in merged_nodes:
-                        return True  # found cycle, return
+                    # If any of the nodes in the dfs path of this node are in the assignment
+                    # map then we have to make sure that the partitions that these nodes belong
+                    # to do not form a cycle with the current partitions being merged. This means
+                    # iterating through all the nodes in all the parititons that are traversed in
+                    # the dfs path and checking if they are in the merged_nodes list.
+                    if path_node in assignment:
+                        partition_id = assignment[path_node]
+                        # If the partition id has already been visited then we know that it doesn't
+                        # form a cycle with the current partitions being merged.
+                        if partition_id in visited_partition_ids:
+                            continue
+                        p_map = partition_map[partition_id]
+                        if self_id in p_map or other_id in p_map:
+                            return True
 
-                    # branching on hitting partition or not
-                    if node in assignment:
-                        # Since partition is not merged in the graph yet, when we
-                        # hit a node in a partition through DFS, we need to
-                        # traverse all nodes in the partition to properly reflect
-                        # dependencies after the fusion
-                        for p_node in partitions_by_id[assignment[node]].nodes:
-                            for user_node in p_node.users:
-                                if user_node not in partitions_by_id[assignment[node]].nodes:
-                                    stack.append(user_node)
-                    else:
-                        for user_node in node.users:
-                            stack.append(user_node)
-
-                    visited.add(node)
+                        visited_partition_ids.add(partition_id)
 
                 return False
 
@@ -121,6 +158,9 @@ class CapabilityBasedPartitioner:
             # delete other partition
             del partitions_by_id[other_id]
 
+            partition_map[self_id] = partition_map[self_id].union(partition_map[other_id])
+            del partition_map[other_id]
+
             return True
 
         def merge_single_node(node: Node, id: Optional[int]):
@@ -132,6 +172,27 @@ class CapabilityBasedPartitioner:
             elif id not in partitions_by_id:
                 assignment[node] = id
                 partitions_by_id[id] = Partition(id=id, nodes=[node])
+
+                # Create an entry in partition map for this partition id and iterate
+                # over all the nodes that are encountered in a dfs path of this node.
+                # We then add the partition id of all the nodes that are encountered
+                # in the dfs path of this node to indicate that there is a path from
+                # partiton id of node to partition id of curr_node.
+                dfs_path = dfs_paths_from_node[node]
+                for curr_node in dfs_path:
+                    target_id = assignment.get(curr_node, None)
+                    if target_id is not None:
+                        partition_map[id].add(target_id)
+
+                # Get the list of all the nodes that are in the dfs path of this node
+                # when starting from the input side of the node. Iterate through each node
+                # in this list and update the partition map to indicate that there is a path
+                # from the partition id of curr_node to the target partition id.
+                dfs_path = dfs_paths_to_node[node]
+                for curr_node in dfs_path:
+                    source_id = assignment.get(curr_node, None)
+                    if target_id is not None:
+                        partition_map[source_id].add(id)
             else:
                 assignment[node] = id
                 partitions_by_id[id].add_node(node)
