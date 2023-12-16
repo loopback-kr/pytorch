@@ -83,6 +83,7 @@ def freezing_passes(gm: torch.fx.GraphModule, aot_example_inputs):
 
 @init_once_fakemode
 def lazy_init():
+    addmm_patterns_init()
     if torch._C._has_mkldnn and config.cpp.weight_prepack:
         from .mkldnn_fusion import _mkldnn_weight_pack_init
 
@@ -90,7 +91,6 @@ def lazy_init():
 
     from .binary_folding import binary_folding_init
 
-    addmm_patterns_init()
     binary_folding_init()
 
 
