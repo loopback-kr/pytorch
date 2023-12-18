@@ -309,6 +309,19 @@ def produce_trampoline_autograd_bwd(fn_cls):
     return trampoline_autograd_bwd
 
 
+def produce_trampoline_autograd_bwd_with_saved(fn_cls):
+    def trampoline_autograd_bwd(ctx, num_saved_tensors, *args, **kwargs):
+        saved_tensors = args[:num_saved_tensors]
+        args = args[num_saved_tensors:]
+        ctx.saved_tensors = saved_tensors
+        for name, value in kwargs.items():
+            setattr(ctx, name, value)
+        return fn_cls.backward(ctx, *args)
+
+    trampoline_autograd_bwd._origin = produce_trampoline_autograd_bwd
+    return trampoline_autograd_bwd
+
+
 def produce_trampoline_autograd_apply(fn_cls):
     def trampoline_autograd_apply(*args, **kwargs):
         return fn_cls.apply(*args, **kwargs)
@@ -339,9 +352,6 @@ class AutogradFunctionVariable(VariableTracker):
 
         VariableTracker.apply(visit, (args, kwargs))
 
-        ctx = AutogradFunctionContextVariable.create(tx)
-        args = [ctx, *args]
-
         if (
             requires_grad
             and torch.is_grad_enabled()
@@ -365,11 +375,12 @@ class AutogradFunctionVariable(VariableTracker):
             if jvp_fn is not torch.autograd.Function.jvp:
                 unimplemented("NYI - User defind jvp")
 
-            from .higher_order_ops import TorchHigherOrderOperatorVariable
-
-            trampoline_autograd_apply = produce_trampoline_autograd_apply(self.fn_cls)
             trampoline_autograd_fwd = produce_trampoline_autograd_fwd(self.fn_cls)
             trampoline_autograd_bwd = produce_trampoline_autograd_bwd(self.fn_cls)
+
+            module_source = AttrSource(
+                tx.import_source(self.fn_cls.__module__), self.fn_cls.__name__
+            )
 
             # NOTE [On Tracing autograd.Function w/ grad]
             # The complex system described here revolves around the soundness evaluation of an autograd.Function in
@@ -388,47 +399,21 @@ class AutogradFunctionVariable(VariableTracker):
             # and that we can inline properly here. Inlining is required in order to be able to ensure that the
             # soundness evaluation works as described above.
 
-            module_source = AttrSource(
-                tx.import_source(self.fn_cls.__module__), self.fn_cls.__name__
-            )
-            fwd_bwd_tracer = torch._dynamo.output_graph.SubgraphTracer(
-                tx.output,
-                parent=tx.output.current_tracer,
-                source_target="autograd.Function",
-            )
-            higher_order_autograd_fn = TorchHigherOrderOperatorVariable.make(
+            from .higher_order_ops import AutogradFunctionApplyVariable
+
+            return AutogradFunctionApplyVariable(
                 trampoline_autograd_fwd,
-                source=AttrSource(module_source, "forward"),
-                fwd_bwd_tracer=fwd_bwd_tracer,
-            )
-            speculated_fwd_result = higher_order_autograd_fn.call_function(
-                tx, args, kwargs
-            )
-
-            if isinstance(speculated_fwd_result, variables.TupleVariable):
-                bwd_args = [ctx, *speculated_fwd_result.items]
-            else:
-                bwd_args = [ctx, speculated_fwd_result]
-
-            TorchHigherOrderOperatorVariable.make(
                 trampoline_autograd_bwd,
-                source=AttrSource(module_source, "backward"),
-                fwd_bwd_tracer=fwd_bwd_tracer,
-            ).call_function(tx, bwd_args, {})
-
-            # If fwd and backward are sound, we want apply in the graph.
-            # We don't want backward because we are tracing forwards.
-            args = args[1:]
-            return TorchHigherOrderOperatorVariable.make(
-                trampoline_autograd_apply,
-                fwd_bwd_tracer=None,
+                source=module_source,
             ).call_function(tx, args, kwargs)
 
+        source = None
         if self.source:
             source = AttrSource(AttrSource(self.source, "__class__"), "forward")
-        else:
-            source = None
+
         fn = self.fn_cls.forward
+        ctx = AutogradFunctionContextVariable.create(tx)
+        args = [ctx, *args]
         if isinstance(fn, types.FunctionType):
             return variables.UserFunctionVariable(fn, source=source).call_function(
                 tx, args, kwargs
