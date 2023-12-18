@@ -91,12 +91,18 @@ def get_wrapper_codegen_for_device(device: str):
         device_codegens[device].wrapper_codegen if device in device_codegens else None
     )
 
-
 def index_prevent_reordering(index: List[sympy.Expr], index_vars, sizes):
     from ..ir import FlexibleLayout
 
     # added contiguous index prevents reordering
     return [*index, sympy_dot(index_vars, FlexibleLayout.contiguous_strides(sizes))]
+
+def get_device_op_overrides(device: str):
+    if device == 'cuda':
+        from .cuda.device_op_overrides import CUDADeviceOpOverrides
+        return CUDADeviceOpOverrides
+
+    return DeviceOpOverrides
 
 
 @functools.lru_cache(None)
@@ -450,6 +456,23 @@ class OpOverrides:
     def load_seed(name, offset):
         return ops.load(name, sympy.Integer(offset))
 
+class DeviceOpOverrides():
+
+    @classmethod
+    def import_get_raw_stream_as(self, name):
+        raise NotImplementedError()
+
+    @classmethod
+    def set_device(self, device_idx):
+        raise NotImplementedError()
+
+    @classmethod
+    def synchronize(self):
+        raise NotImplementedError()
+
+    @classmethod
+    def DeviceGuard(self, device_idx):
+        raise NotImplementedError()
 
 class DeferredLine(DeferredLineBase):
     """A line that can be 'unwritten' by adding name to V.graph.removed_buffers"""

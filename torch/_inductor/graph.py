@@ -27,6 +27,7 @@ from .codegen.common import (
     get_scheduling_for_device,
     get_wrapper_codegen_for_device,
     register_backend_for_device,
+    get_device_op_overrides,
 )
 from .codegen.wrapper import CppWrapperCodeGen, CudaWrapperCodeGen, WrapperCodeGen
 from .exc import (
@@ -989,6 +990,7 @@ class GraphLowering(torch.fx.Interpreter):
         )
         only_cpu = len(device_types) == 0
         device_type = "cpu" if only_cpu else device_types.pop()
+        self.deviceOpOverrides = get_device_op_overrides(device_type)
         wrapper_code_gen_cls = get_wrapper_codegen_for_device(device_type)
         assert wrapper_code_gen_cls is not None, f"Device {device_type} not supported"
         self.wrapper_code = wrapper_code_gen_cls()
@@ -1037,7 +1039,6 @@ class GraphLowering(torch.fx.Interpreter):
         from .scheduler import Scheduler
 
         self.init_wrapper_code()
-
         self.scheduler = Scheduler(self.buffers)
         V.debug.draw_orig_fx_graph(self.orig_gm, self.scheduler.nodes)
         self.scheduler.codegen()
