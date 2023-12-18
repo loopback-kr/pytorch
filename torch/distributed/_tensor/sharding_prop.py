@@ -71,7 +71,9 @@ class ShardingPropagator:
 
     def _propagate_tensor_meta(
         self, op_schema: OpSchema
-    ) -> Union[None, TensorMeta, List[TensorMeta], Tuple[TensorMeta, ...]]:
+    ) -> Union[
+        None, TensorMeta, List[Optional[TensorMeta]], Tuple[Optional[TensorMeta], ...]
+    ]:
         """
         Propagate the tensor metadata, it could either return a TensorMeta
         or a list/tuple of TensorMetas
@@ -93,7 +95,7 @@ class ShardingPropagator:
             )
 
         elif isinstance(fake_out, (tuple, list)):
-            tensor_meta_list = []
+            tensor_meta_list: List[Optional[TensorMeta]] = []
             for fake_out_item in fake_out:
                 if isinstance(fake_out_item, torch.Tensor):
                     tensor_meta_list.append(
@@ -103,6 +105,8 @@ class ShardingPropagator:
                             dtype=fake_out_item.dtype,
                         )
                     )
+                else:
+                    tensor_meta_list.append(None)
             return (
                 tuple(tensor_meta_list)
                 if isinstance(fake_out, tuple)
@@ -117,7 +121,10 @@ class ShardingPropagator:
         op: OpOverload,
         output_spec: OutputSpecType,
         output_tensor_meta: Union[
-            None, TensorMeta, List[TensorMeta], Tuple[TensorMeta, ...]
+            None,
+            TensorMeta,
+            List[Optional[TensorMeta]],
+            Tuple[Optional[TensorMeta], ...],
         ],
     ) -> None:
         """
@@ -211,6 +218,13 @@ class ShardingPropagator:
 
             op_strategy = self.op_strategy_funcs[op_schema.op](mesh, strategy_schema)
 
+            def _assert_output_spec(spec_obj, idx) -> DTensorSpec:
+                if isinstance(spec_obj, DTensorSpec):
+                    return spec_obj
+                else:
+                    assert isinstance(spec_obj[idx], DTensorSpec)
+                    return spec_obj[idx]
+
             if isinstance(op_strategy, OpStrategy):
                 # single Op strategy
                 output_strategy = self._select_strategy(op_strategy)
@@ -219,7 +233,8 @@ class ShardingPropagator:
                 expected_input_specs = []
                 for idx, input_spec in enumerate(op_schema.args_spec):
                     desired_spec = (
-                        output_strategy.output_spec
+                        # TODO: change here
+                        _assert_output_spec(output_strategy.output_spec, idx)
                         if output_strategy.input_specs is None
                         else output_strategy.input_specs[idx]
                     )
@@ -237,19 +252,23 @@ class ShardingPropagator:
 
                 if op_schema.return_type_tuple_tensors():
                     # for ops return multiple tensors, make output spec return same spec
-                    # returned from the op strategy
-                    output_spec: OutputSpecType = tuple(
-                        [
-                            # create a new DTensorSpec with the same placement as the
-                            # output_spec in output_strategy
-                            DTensorSpec(
-                                mesh=output_strategy.output_spec.mesh,
-                                placements=output_strategy.output_spec.placements,
-                                tensor_meta=output_strategy.output_spec.tensor_meta,
-                            )
-                            for _ in range(len(op_schema.op._schema.returns))
-                        ]
-                    )
+                    # returned from the op strategy if the output_spec is not a list
+                    output_spec_obj = output_strategy.output_spec
+                    if isinstance(output_spec_obj, DTensorSpec):
+                        output_spec: OutputSpecType = tuple(
+                            [
+                                # create a new DTensorSpec with the same placement as the
+                                # output_spec in output_strategy
+                                DTensorSpec(
+                                    mesh=output_strategy.output_spec.mesh,
+                                    placements=output_strategy.output_spec.placements,
+                                    tensor_meta=output_strategy.output_spec.tensor_meta,
+                                )
+                                for _ in range(len(op_schema.op._schema.returns))
+                            ]
+                        )
+                    else:
+                        output_spec = output_strategy.output_spec
                 elif op_schema.return_type_tensor():
                     output_spec = output_strategy.output_spec
                 else:
@@ -262,11 +281,18 @@ class ShardingPropagator:
                 )
             elif isinstance(op_strategy, TupleStrategy):
                 # tuple strategy output sharding
-                out_spec_list = []
+                input_specs_list = None
+                out_spec_list: List[Optional[DTensorSpec]] = []
                 for strategy in op_strategy.childs:
-                    assert isinstance(strategy, OpStrategy)
-                    output_strategy = self._select_strategy(strategy)
-                    out_spec_list.append(output_strategy.output_spec)
+                    if isinstance(strategy, OpStrategy):
+                        output_strategy = self._select_strategy(strategy)
+                        # we expect the out strategies all share the same input specs
+                        if not input_specs_list:
+                            input_specs_list = output_strategy.input_specs
+                        out_spec_list.append(output_strategy.output_spec)
+                    else:
+                        # for None output in tuple, its output spec should also be None
+                        out_spec_list.append(None)
 
                 needs_redistribute = False
                 suggestion_args: List[object] = []
@@ -276,9 +302,12 @@ class ShardingPropagator:
                     ):
                         expected_input_spec_list = []
                         for idx, arg_spec in enumerate(arg):
-                            if arg_spec.placements != out_spec_list[idx].placements:
+                            out_spec = out_spec_list[idx]
+                            # we expect ops whose op_type is 0 have no None output
+                            assert isinstance(out_spec, DTensorSpec)
+                            if arg_spec.placements != out_spec.placements:
                                 needs_redistribute = True
-                            expected_input_spec_list.append(out_spec_list[idx])
+                            expected_input_spec_list.append(out_spec)
                         suggestion_args.append(
                             tuple(expected_input_spec_list)
                             if isinstance(arg, tuple)
@@ -286,6 +315,8 @@ class ShardingPropagator:
                         )
                     elif isinstance(arg, DTensorSpec):
                         expected_input_spec = out_spec_list[0]
+                        # we expect ops whose op_type is 0 have no None output
+                        assert isinstance(expected_input_spec, DTensorSpec)
                         if arg.placements != expected_input_spec.placements:
                             needs_redistribute = True
                         suggestion_args.append(expected_input_spec)
