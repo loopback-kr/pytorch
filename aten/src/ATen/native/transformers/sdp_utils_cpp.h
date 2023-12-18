@@ -276,6 +276,37 @@ inline bool check_for_attn_mask(sdp_params const& params, bool debug) {
   return true;
 }
 
+inline bool check_attn_mask_shape(sdp_params const& params, bool debug) {
+  auto attn_mask = params.attn_mask;
+  if (!attn_mask.has_value()) {
+    return true;
+  }
+  int64_t batchSize = params.query.size(0);
+  int64_t qSize = params.query.size(2);
+  int64_t kvSize = params.key.size(2);
+  int64_t num_head = params.query.size(1);
+  if (attn_mask.value().dim() == 2) {
+    if (attn_mask.value().size(0) == qSize && attn_mask.value().size(1) == kvSize) {
+      return true;
+    }
+  } else if (attn_mask.value().dim() == 3) {
+    if ((attn_mask.value().size(0) == batchSize * num_head || attn_mask.value().size(0) == 1)
+        && attn_mask.value().size(1) == qSize && attn_mask.value().size(2) == kvSize) {
+      return true;
+    };
+  } else if (attn_mask.value().dim() == 4) {
+    if (attn_mask.value().size(2) == qSize && attn_mask.value().size(3) == kvSize
+        && (attn_mask.value().size(0) == 1 || attn_mask.value().size(0) == batchSize)
+        && (attn_mask.value().size(1) == 1 || attn_mask.value().size(1) == num_head)) {
+      return true;
+    }
+  }
+  if (debug) {
+    TORCH_WARN("Unsupported attn mask shape.");
+  }
+  return false;
+}
+
 inline bool check_tensor_shapes(sdp_params const& params, bool debug) {
   auto query_dim = params.query.dim();
   if (!(query_dim == params.key.dim() && query_dim == params.value.dim() &&
