@@ -473,6 +473,18 @@ std::tuple<Tensor, Tensor, Tensor> batch_norm_cuda(const Tensor& self, const c10
   return std::make_tuple(output, save_mean, save_invstd);
 }
 
+std::tuple<Tensor, Tensor, Tensor, Tensor> _new_batch_norm_cuda(
+    const Tensor& input, const c10::optional<Tensor>& weight_opt, const c10::optional<Tensor>& bias_opt,
+    const c10::optional<Tensor>& running_mean_opt, const c10::optional<Tensor>& running_var_opt,
+    bool update, double momentum, double eps, bool cudnn_enabled) {
+  // TODO: dispatch to cudnn or miopen
+  Tensor output, save_mean, save_var;
+  std::tie(output, save_mean, save_var) =
+    batch_norm_cuda(input, weight_opt, bias_opt, running_mean_opt, running_var_opt, update, momentum, eps);
+  Tensor reserve = at::empty({0}, input.options().dtype(kByte));
+  return std::tuple<Tensor, Tensor, Tensor, Tensor>(output, save_mean, save_var, reserve);
+}
+
 std::tuple<Tensor, Tensor, Tensor> _batch_norm_legit_cuda(const Tensor& self, const c10::optional<Tensor>& weight_opt, const c10::optional<Tensor>& bias_opt, Tensor& running_mean, Tensor& running_var, bool train, double momentum, double epsilon) {
   return batch_norm_cuda(self, weight_opt, bias_opt, running_mean, running_var, train, momentum, epsilon);
 }

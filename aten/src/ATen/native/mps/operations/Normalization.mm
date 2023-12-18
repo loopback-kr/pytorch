@@ -406,6 +406,17 @@ std::tuple<Tensor, Tensor, Tensor> batch_norm_mps(const Tensor& self,
   return std::make_tuple(output, save_mean, save_var);
 }
 
+std::tuple<Tensor, Tensor, Tensor, Tensor> _new_batch_norm_mps(
+    const Tensor& input, const c10::optional<Tensor>& weight_opt, const c10::optional<Tensor>& bias_opt,
+    const c10::optional<Tensor>& running_mean_opt, const c10::optional<Tensor>& running_var_opt,
+    bool update, double momentum, double eps, bool cudnn_enabled) {
+  Tensor output, save_mean, save_var;
+  std::tie(output, save_mean, save_var) =
+    batch_norm_mps(input, weight_opt, bias_opt, running_mean_opt, running_var_opt, update, momentum, eps);
+  Tensor reserve = at::empty({0}, input.options().dtype(kByte));
+  return std::tuple<Tensor, Tensor, Tensor, Tensor>(output, save_mean, save_var, reserve);
+}
+
 std::tuple<Tensor, Tensor, Tensor> _batch_norm_legit_mps(const Tensor& self,
                                                          const c10::optional<Tensor>& weight_opt,
                                                          const c10::optional<Tensor>& bias_opt,

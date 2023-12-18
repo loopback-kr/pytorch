@@ -6439,6 +6439,13 @@
     SparseCPU, SparseCUDA: norm_sparse
   autogen: native_norm.ScalarOpt_dim_dtype_out
 
+- func: _new_batch_norm(Tensor input, Tensor? weight, Tensor? bias, Tensor? running_mean, Tensor? running_var, bool update, float momentum, float eps, bool cudnn_enabled) -> (Tensor, Tensor, Tensor, Tensor)
+  dispatch:
+    CPU: _new_batch_norm_cpu
+    CUDA: _new_batch_norm_cuda
+    MPS: _new_batch_norm_mps
+    MkldnnCPU: _new_batch_norm_mkldnn
+
 # TODO: reduce signatures down to one when optional args is available
 - func: _sparse_sum(Tensor self) -> Tensor
 
