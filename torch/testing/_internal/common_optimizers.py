@@ -1189,6 +1189,14 @@ optim_db: List[OptimizerInfo] = [
                 "test_foreach_mixed_device_dtype",
                 active_if=TEST_WITH_TORCHDYNAMO,
             ),
+            DecorateInfo(
+                skipIfTorchDynamo(
+                    "Errors with list out of range, see https://github.com/pytorch/pytorch/issues/116061"
+                ),
+                "TestOptimRenewed",
+                "test_step_is_noop_for_empty_grads",
+                device_type="cpu",
+            ),
         ),
     ),
     OptimizerInfo(
