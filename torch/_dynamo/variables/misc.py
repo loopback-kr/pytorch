@@ -5,7 +5,7 @@ import inspect
 import itertools
 import sys
 import types
-from typing import Dict, List
+from typing import cast, Dict, List
 
 import torch._C
 import torch._numpy as tnp
@@ -144,6 +144,8 @@ class SuperVariable(VariableTracker):
         ):
             from .builder import VariableBuilder
 
+            # args[0] = args[0].add_guard(GuardBuilder.CONSTANT_MATCH)
+            # install_guard(source.make_guard(GuardBuilder.CONSTANT_MATCH))
             key = args[0].as_python_constant()
             return VariableBuilder(tx, ODictGetItemSource(self.objvar.source, key))(
                 collections.OrderedDict.__getitem__(self.objvar.value, key)
@@ -156,7 +158,7 @@ class SuperVariable(VariableTracker):
             and self.objvar.mutable_local
         ):
             assert not kwargs and len(args) == 2
-            k = variables.ConstDictVariable.get_key(args[0])
+            k = variables.ConstDictVariable.get_key(tx, args[0])
             tx.output.side_effects.mutation(self)
             self.objvar.items[k] = args[1]
             return variables.ConstantVariable.create(None)
@@ -814,6 +816,47 @@ class SkipFilesVariable(VariableTracker):
             return variables.functions.FunctoolsPartialVariable(
                 fn, args=rest_args, keywords=kwargs
             )
+        elif (
+            self.value is cast
+            and isinstance(args[0], variables.UserDefinedClassVariable)
+            and isinstance(args[1], variables.nn_module.FSDPManagedNNModuleVariable)
+        ):
+            new_obj = cast(args[0].value, args[1].value)
+            args[1].mutable_local = MutableLocal()
+            return args[1]
+        elif (
+            self.value is cast
+            and isinstance(args[0], variables.UserDefinedClassVariable)
+            and isinstance(args[1], variables.UserDefinedObjectVariable)
+        ):
+            new_obj = cast(args[0].value, args[1].value)
+            args[1].mutable_local = MutableLocal()
+            return variables.UserDefinedObjectVariable(new_obj)
+        elif (
+            self.value is cast
+            and isinstance(args[0], variables.UserDefinedClassVariable)
+            and isinstance(args[1], variables.NNModuleVariable)
+        ):
+            new_obj = cast(args[0].value, tx.output.nn_modules[args[1].module_key])
+            args[1].mutable_local = MutableLocal()
+            return args[1]
+        elif self.value is cast:
+            unimplemented(f"Cast with {args}")
+        elif self.value is itertools.repeat:
+            if len(args) < 2:
+                return variables.RepeatIteratorVariable(
+                    *args, mutable_local=MutableLocal()
+                )
+
+            from .builder import SourcelessBuilder
+
+            return tx.inline_user_function_return(
+                SourcelessBuilder()(tx, polyfill.repeat), args, kwargs
+            )
+        elif self.value is itertools.count:
+            return variables.CountIteratorVariable(*args, mutable_local=MutableLocal())
+        elif self.value is itertools.cycle:
+            return variables.CycleIteratorVariable(*args, mutable_local=MutableLocal())
         else:
             try:
                 path = inspect.getfile(self.value)
