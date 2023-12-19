@@ -44,8 +44,10 @@
 // until we use hipblas v2
 // hipify correctly maps things like CUDA_R_16F to HIP_R_16F,
 // however hipblas v1 is still using its custom type
+#ifndef HIPBLAS_V2
 #define HIP_R_16F  HIPBLAS_R_16F
 #define HIP_R_32F  HIPBLAS_R_32F
+#endif // HIPBLAS_V2
 #else // USE_ROCM
 #define CUBLAS_HALF_TYPE __half
 #endif // USE_ROCM
@@ -636,7 +638,11 @@ CAFFE2_CUDA_EXPORT void Gemm<at::Half, CUDAContext>(
         C,
         HIPBLAS_R_16F,
         N,
+#if defined(USE_ROCM) && ROCM_VERSION >= 60000
+        HIPBLAS_COMPUTE_32F, // compute type
+#else
         HIPBLAS_R_32F, // compute type
+#endif
         HIPBLAS_GEMM_DEFAULT));
 #else
     CUBLAS_ENFORCE(cublasSgemmEx(
@@ -873,7 +879,11 @@ CAFFE2_CUDA_EXPORT void GemmBatched<at::Half, CUDAContext>(
         CUDA_R_16F,
         ldc,
         batch_size,
+#if defined(USE_ROCM) && ROCM_VERSION >= 60000
+        HIPBLAS_COMPUTE_32F, // compute type
+#else
         CUDA_R_32F,
+#endif
         CUBLAS_GEMM_DEFAULT_TENSOR_OP));
   } else if (math_type == TensorProto_DataType_FLOAT16) {
     // Convert alpha, beta from float -> __half
@@ -967,7 +977,11 @@ CAFFE2_CUDA_EXPORT void GemmStridedBatched<at::Half, CUDAContext>(
         ldc,
         C_stride,
         batch_size,
+#if defined(USE_ROCM) && ROCM_VERSION >= 60000
+        HIPBLAS_COMPUTE_32F, // compute type
+#else
         CUDA_R_32F,
+#endif
         CUBLAS_GEMM_DEFAULT_TENSOR_OP));
   } else if (math_type == TensorProto_DataType_FLOAT16) {
     // Convert alpha, beta from float -> __half
@@ -1077,7 +1091,11 @@ CAFFE2_CUDA_EXPORT void Gemv<at::Half, CUDAContext>(
         y,
         HIPBLAS_R_16F,
         ldc,
+#if defined(USE_ROCM) && ROCM_VERSION >= 60000
+        HIPBLAS_COMPUTE_32F, // compute type
+#else
         HIPBLAS_R_32F, // compute type
+#endif
         HIPBLAS_GEMM_DEFAULT));
 #else
     CUBLAS_ENFORCE(cublasSgemmEx(
