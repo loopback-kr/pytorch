@@ -13,6 +13,7 @@
 #include <c10/util/Optional.h>
 
 #include <memory>
+#include <optional>
 #include <utility>
 #include <vector>
 
@@ -31,6 +32,8 @@ struct PyNode : public Node {
 
   variable_list apply(variable_list&& inputs) override;
 
+  variable_list compiled_apply(variable_list&& inputs, std::optional<PyObject*> compiler);
+
   void release_variables() override;
   std::string name() const override;
   bool is_traceable() override;
@@ -42,6 +45,12 @@ struct PyNode : public Node {
 
   // THPFunction this Function is wrapping.  Owning!
   PyObject* obj;
+
+  // The AutogradCompilerCall::hooks idx corresponding to this node's backward
+  std::optional<int> _backward_idx;
+  // The TensorArgs::inputs index corresponding to this node's tensors saved for backward
+  std::optional<int> _saved_tensors_start_idx;
+  std::optional<int> _saved_tensors_end_idx;
 
   ~PyNode() override {
     // Can't use THPObjectPtr as a field in this class; destructor won't take
